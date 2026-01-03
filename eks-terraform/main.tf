@@ -3,7 +3,7 @@ provider "aws" {
 }
 
 # ----------------------------
-# VPC and Subnet Data Sources
+# VPC and Subnet Data Sources (your Jumphost VPC)
 # ----------------------------
 data "aws_vpc" "main" {
   tags = {
@@ -36,10 +36,11 @@ data "aws_security_group" "selected" {
 }
 
 # ----------------------------
-# EKS Cluster (uses default service-linked role - no custom IAM)
+# EKS Cluster (no role_arn - EKS uses default service-linked role)
 # ----------------------------
 resource "aws_eks_cluster" "eks" {
   name     = "project-eks"
+  version  = "1.29"  # Required to allow omitting role_arn
 
   vpc_config {
     subnet_ids              = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
@@ -53,46 +54,38 @@ resource "aws_eks_cluster" "eks" {
     Environment = "dev"
     Terraform   = "true"
   }
-
-  # Important for labs: adds creator as admin
-  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
-
-  # This automatically grants the creator (your voclabs user) admin access
-  access_config {
-    authentication_mode = "API_AND_CONFIG_MAP"
-  }
 }
 
 # ----------------------------
-# Fargate Profile (serverless nodes - no IAM roles, no node groups)
+# EKS Managed Node Group (no node_role_arn - EKS uses default)
 # ----------------------------
-resource "aws_eks_fargate_profile" "default" {
-  cluster_name           = aws_eks_cluster.eks.name
-  fargate_profile_name   = "default"
-  pod_execution_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/AmazonEKSFargatePodExecutionRole"  # usually pre-exists or auto-created
+resource "aws_eks_node_group" "node-grp" {
+  cluster_name    = aws_eks_cluster.eks.name
+  node_group_name = "project-node-group"
+  subnet_ids      = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
 
-  subnet_ids = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
+  instance_types = ["t2.large"]
+  disk_size      = 20
 
-  selector {
-    namespace = "default"
+  scaling_config {
+    desired_size = 2
+    max_size     = 4
+    min_size     = 1
   }
 
-  selector {
-    namespace = "kube-system"
+  update_config {
+    max_unavailable = 1
   }
 
   tags = {
-    Name = "default-fargate-profile"
+    Name = "project-eks-node-group"
   }
 
   depends_on = [aws_eks_cluster.eks]
 }
 
-# Needed for account ID
-data "aws_caller_identity" "current" {}
-
 # ----------------------------
-# Optional OIDC Provider (safe and useful)
+# Optional: OIDC Provider (useful for IRSA later)
 # ----------------------------
 data "aws_eks_cluster" "eks_oidc" {
   name = aws_eks_cluster.eks.name
