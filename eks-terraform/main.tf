@@ -3,7 +3,114 @@ provider "aws" {
 }
 
 # ----------------------------
-# Use Existing Lab VPC/Subnet/SG (your style)
+# IAM Role for EKS Cluster
+# ----------------------------
+resource "aws_iam_role" "master" {
+  name = "yaswanth-eks-master1"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect = "Allow",
+      Principal = {
+        Service = "eks.amazonaws.com"
+      },
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "AmazonEKSClusterPolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.master.name
+}
+
+resource "aws_iam_role_policy_attachment" "AmazonEKSServicePolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSServicePolicy"
+  role       = aws_iam_role.master.name
+}
+
+resource "aws_iam_role_policy_attachment" "AmazonEKSVPCResourceController" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSVPCResourceController"
+  role       = aws_iam_role.master.name
+}
+
+# ----------------------------
+# IAM Role for Worker Nodes
+# ----------------------------
+resource "aws_iam_role" "worker" {
+  name = "yaswanth-eks-worker1"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect = "Allow",
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      },
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_policy" "autoscaler" {
+  name = "yaswanth-eks-autoscaler-policy1"
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Action = [
+        "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeAutoScalingInstances",
+        "autoscaling:DescribeTags",
+        "autoscaling:DescribeLaunchConfigurations",
+        "autoscaling:SetDesiredCapacity",
+        "autoscaling:TerminateInstanceInAutoScalingGroup",
+        "ec2:DescribeLaunchTemplateVersions"
+      ],
+      Effect   = "Allow",
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "AmazonEKSWorkerNodePolicy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+  role       = aws_iam_role.worker.name
+}
+
+resource "aws_iam_role_policy_attachment" "AmazonEKS_CNI_Policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+  role       = aws_iam_role.worker.name
+}
+
+resource "aws_iam_role_policy_attachment" "AmazonSSMManagedInstanceCore" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  role       = aws_iam_role.worker.name
+}
+
+resource "aws_iam_role_policy_attachment" "AmazonEC2ContainerRegistryReadOnly" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+  role       = aws_iam_role.worker.name
+}
+
+resource "aws_iam_role_policy_attachment" "S3ReadOnlyAccess" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"
+  role       = aws_iam_role.worker.name
+}
+
+resource "aws_iam_role_policy_attachment" "autoscaler" {
+  policy_arn = aws_iam_policy.autoscaler.arn
+  role       = aws_iam_role.worker.name
+}
+
+resource "aws_iam_instance_profile" "worker" {
+  depends_on = [aws_iam_role.worker]
+  name       = "yaswanth-eks-worker-profile1"
+  role       = aws_iam_role.worker.name
+}
+
+# ----------------------------
+# VPC and Subnet Data Sources
 # ----------------------------
 data "aws_vpc" "main" {
   tags = {
@@ -11,11 +118,19 @@ data "aws_vpc" "main" {
   }
 }
 
-data "aws_subnet" "subnet_1" {
+data "aws_subnet" "subnet-1" {
   vpc_id = data.aws_vpc.main.id
   filter {
     name   = "tag:Name"
     values = ["Public-Subnet-1"]
+  }
+}
+
+data "aws_subnet" "subnet-2" {
+  vpc_id = data.aws_vpc.main.id
+  filter {
+    name   = "tag:Name"
+    values = ["Public-subnet2"]
   }
 }
 
@@ -28,94 +143,83 @@ data "aws_security_group" "selected" {
 }
 
 # ----------------------------
-# Amazon Linux 2023 AMI
+# EKS Cluster
 # ----------------------------
-data "aws_ami" "al2023" {
-  most_recent = true
-  owners      = ["amazon"]
+resource "aws_eks_cluster" "eks" {
+  name     = "project-eks"
+  role_arn = aws_iam_role.master.arn
 
-  filter {
-    name   = "name"
-    values = ["al2023-ami-*-x86_64"]
+  vpc_config {
+    subnet_ids         = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
+    security_group_ids = [data.aws_security_group.selected.id]
   }
-}
-
-# ----------------------------
-# EC2 Instance: Jenkins + Docker + K3s
-# ----------------------------
-resource "aws_instance" "cicd_k8s" {
-  ami                    = data.aws_ami.al2023.id
-  instance_type          = "t3.medium" # ✅ recommended for Jenkins + K3s
-  subnet_id              = data.aws_subnet.subnet_1.id
-  vpc_security_group_ids = [data.aws_security_group.selected.id]
-
-  # If your lab has a keypair, you can enable this:
-  # key_name = "vockey"
-
-  user_data = <<-EOF
-              #!/bin/bash
-              set -e
-
-              # Update system
-              dnf update -y
-
-              # Install packages
-              dnf install -y git wget unzip curl
-
-              # Install Java 17 (needed for Jenkins)
-              dnf install -y java-17-amazon-corretto
-
-              # Install Docker
-              dnf install -y docker
-              systemctl enable docker
-              systemctl start docker
-              usermod -aG docker ec2-user
-
-              # Install Jenkins
-              wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
-              rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
-              dnf install -y jenkins
-              systemctl enable jenkins
-              systemctl start jenkins
-
-              # Install K3s (Kubernetes)
-              curl -sfL https://get.k3s.io | sh -
-
-              # Allow ec2-user to use kubectl
-              mkdir -p /home/ec2-user/.kube
-              sudo cp /etc/rancher/k3s/k3s.yaml /home/ec2-user/.kube/config
-              sudo chown ec2-user:ec2-user /home/ec2-user/.kube/config
-              echo "export KUBECONFIG=/home/ec2-user/.kube/config" >> /home/ec2-user/.bashrc
-
-              # Install kubectl shortcut
-              ln -s /usr/local/bin/k3s /usr/local/bin/kubectl
-
-              # Print Jenkins password to a file for easy access
-              sleep 20
-              cat /var/lib/jenkins/secrets/initialAdminPassword > /home/ec2-user/jenkins_password.txt
-              chown ec2-user:ec2-user /home/ec2-user/jenkins_password.txt
-              EOF
 
   tags = {
-    Name = "cicd-kubernetes-server"
+    Name        = "yaswanth-eks-cluster"
+    Environment = "dev"
+    Terraform   = "true"
   }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.AmazonEKSClusterPolicy,
+    aws_iam_role_policy_attachment.AmazonEKSServicePolicy,
+    aws_iam_role_policy_attachment.AmazonEKSVPCResourceController,
+  ]
+}
+
+
+# ----------------------------
+# EKS Node Group
+# ----------------------------
+resource "aws_eks_node_group" "node-grp" {
+  cluster_name    = aws_eks_cluster.eks.name
+  node_group_name = var.node_group_name
+  node_role_arn   = aws_iam_role.worker.arn
+  subnet_ids      = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
+  capacity_type   = "ON_DEMAND"
+  disk_size       = 20
+  instance_types  = ["t2.large"]
+
+  labels = {
+    env = "dev"
+  }
+
+  tags = {
+    Name = "project-eks-node-group"
+  }
+
+  scaling_config {
+    desired_size = 3
+    max_size     = 10
+    min_size     = 2
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.AmazonEKSWorkerNodePolicy,
+    aws_iam_role_policy_attachment.AmazonEKS_CNI_Policy,
+    aws_iam_role_policy_attachment.AmazonEC2ContainerRegistryReadOnly,
+    aws_iam_role_policy_attachment.AmazonSSMManagedInstanceCore,
+    aws_iam_role_policy_attachment.autoscaler,
+  ]
 }
 
 # ----------------------------
-# Outputs
+# OIDC Provider for ServiceAccount IAM Roles
 # ----------------------------
-output "server_public_ip" {
-  value = aws_instance.cicd_k8s.public_ip
+data "aws_eks_cluster" "eks_oidc" {
+  name = aws_eks_cluster.eks.name
 }
 
-output "jenkins_url" {
-  value = "http://${aws_instance.cicd_k8s.public_ip}:8080"
+data "tls_certificate" "oidc_thumbprint" {
+  url = data.aws_eks_cluster.eks_oidc.identity[0].oidc[0].issuer
 }
 
-output "ssh_command" {
-  value = "ssh ec2-user@${aws_instance.cicd_k8s.public_ip}"
-}
-
-output "jenkins_password_hint" {
-  value = "After SSH: cat ~/jenkins_password.txt"
+resource "aws_iam_openid_connect_provider" "eks_oidc" {
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = [data.tls_certificate.oidc_thumbprint.certificates[0].sha1_fingerprint]
+  url             = data.aws_eks_cluster.eks_oidc.identity[0].oidc[0].issuer
 }
