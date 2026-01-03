@@ -1,102 +1,158 @@
+terraform {
+  required_version = ">= 1.3.0"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
 provider "aws" {
-  region = "us-east-1"
+  region = "us-west-2"
 }
 
 # ----------------------------
-# VPC and Subnet Data Sources (your Jumphost VPC)
+# VPC
 # ----------------------------
-data "aws_vpc" "main" {
-  tags = {
-    Name = "Jumphost-vpc"
-  }
-}
-
-data "aws_subnet" "subnet-1" {
-  vpc_id = data.aws_vpc.main.id
-  filter {
-    name   = "tag:Name"
-    values = ["Public-Subnet-1"]
-  }
-}
-
-data "aws_subnet" "subnet-2" {
-  vpc_id = data.aws_vpc.main.id
-  filter {
-    name   = "tag:Name"
-    values = ["Public-subnet2"]
-  }
-}
-
-data "aws_security_group" "selected" {
-  vpc_id = data.aws_vpc.main.id
-  filter {
-    name   = "tag:Name"
-    values = ["Jumphost-sg"]
-  }
-}
-
-# ----------------------------
-# EKS Cluster (no role_arn - EKS uses default service-linked role)
-# ----------------------------
-resource "aws_eks_cluster" "eks" {
-  name     = "project-eks"
-  version  = "1.29"  # Required to allow omitting role_arn
-
-  vpc_config {
-    subnet_ids              = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
-    security_group_ids      = [data.aws_security_group.selected.id]
-    endpoint_private_access = false
-    endpoint_public_access  = true
-  }
+resource "aws_vpc" "jenkins_vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
 
   tags = {
-    Name        = "project-eks-cluster"
-    Environment = "dev"
-    Terraform   = "true"
+    Name = "jenkins-vpc"
   }
 }
 
 # ----------------------------
-# EKS Managed Node Group (no node_role_arn - EKS uses default)
+# Internet Gateway
 # ----------------------------
-resource "aws_eks_node_group" "node-grp" {
-  cluster_name    = aws_eks_cluster.eks.name
-  node_group_name = "project-node-group"
-  subnet_ids      = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.jenkins_vpc.id
 
-  instance_types = ["t2.large"]
-  disk_size      = 20
-
-  scaling_config {
-    desired_size = 2
-    max_size     = 4
-    min_size     = 1
+  tags = {
+    Name = "jenkins-igw"
   }
+}
 
-  update_config {
-    max_unavailable = 1
+# ----------------------------
+# Public Subnet
+# ----------------------------
+resource "aws_subnet" "public_subnet" {
+  vpc_id                  = aws_vpc.jenkins_vpc.id
+  cidr_block              = "10.0.1.0/24"
+  map_public_ip_on_launch = true
+  availability_zone       = "us-west-2a"
+
+  tags = {
+    Name = "jenkins-public-subnet"
+  }
+}
+
+# ----------------------------
+# Route Table
+# ----------------------------
+resource "aws_route_table" "public_rt" {
+  vpc_id = aws_vpc.jenkins_vpc.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
   }
 
   tags = {
-    Name = "project-eks-node-group"
+    Name = "jenkins-public-rt"
+  }
+}
+
+resource "aws_route_table_association" "public_assoc" {
+  subnet_id      = aws_subnet.public_subnet.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+# ----------------------------
+# Security Group (SSH + Jenkins)
+# ----------------------------
+resource "aws_security_group" "jenkins_sg" {
+  name        = "jenkins-sg"
+  description = "Allow SSH + Jenkins"
+  vpc_id      = aws_vpc.jenkins_vpc.id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
-  depends_on = [aws_eks_cluster.eks]
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "jenkins-sg"
+  }
 }
 
 # ----------------------------
-# Optional: OIDC Provider (useful for IRSA later)
+# Latest Amazon Linux 2 AMI
 # ----------------------------
-data "aws_eks_cluster" "eks_oidc" {
-  name = aws_eks_cluster.eks.name
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
 }
 
-data "tls_certificate" "oidc_thumbprint" {
-  url = data.aws_eks_cluster.eks_oidc.identity[0].oidc[0].issuer
+# ----------------------------
+# EC2 Instance with Jenkins installed
+# ----------------------------
+resource "aws_instance" "jenkins" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = "t2.micro"
+  subnet_id              = aws_subnet.public_subnet.id
+  vpc_security_group_ids = [aws_security_group.jenkins_sg.id]
+
+  user_data = <<-EOF
+              #!/bin/bash
+              yum update -y
+              amazon-linux-extras install java-openjdk11 -y
+
+              wget -O /etc/yum.repos.d/jenkins.repo https://pkg.jenkins.io/redhat-stable/jenkins.repo
+              rpm --import https://pkg.jenkins.io/redhat-stable/jenkins.io.key
+              yum install -y jenkins git
+
+              systemctl enable jenkins
+              systemctl start jenkins
+              EOF
+
+  tags = {
+    Name = "jenkins-server"
+  }
 }
 
-resource "aws_iam_openid_connect_provider" "eks_oidc" {
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [data.tls_certificate.oidc_thumbprint.certificates[0].sha1_fingerprint]
-  url             = data.aws_eks_cluster.eks_oidc.identity[0].oidc[0].issuer
+# ----------------------------
+# Outputs
+# ----------------------------
+output "jenkins_public_ip" {
+  value = aws_instance.jenkins.public_ip
+}
+
+output "jenkins_url" {
+  value = "http://${aws_instance.jenkins.public_ip}:8080"
 }
