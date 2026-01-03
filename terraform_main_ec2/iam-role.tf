@@ -1,3 +1,4 @@
+/*
 resource "aws_iam_role" "iam-role" {
   name               = var.iam-role
   assume_role_policy = <<EOF
@@ -15,3 +16,4 @@ resource "aws_iam_role" "iam-role" {
 }
 EOF
 }
+*/

@@ -1,3 +1,4 @@
+/*
 resource "aws_iam_policy" "eks_policy" {
   name        = "eks_policy"
   description = "Custom policy for EKS full access"
@@ -49,3 +50,4 @@ resource "aws_iam_role_policy_attachment" "iam_full_access" {
   role       = aws_iam_role.iam-role.name
   policy_arn = "arn:aws:iam::aws:policy/IAMFullAccess"
 }
+*/

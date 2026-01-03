@@ -9,6 +9,10 @@ pipeline {
         )
     }
 
+    environment {
+        AWS_DEFAULT_REGION = 'us-east-1'  // Change if your lab uses a different region
+    }
+
     stages {
         stage('Checkout from Git') {
             steps {
@@ -25,7 +29,9 @@ pipeline {
         stage('Terraform init') {
             steps {
                 dir('eks-terraform') {
-                    sh 'terraform init --reconfigure'
+                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
+                        sh 'terraform init --reconfigure'
+                    }
                 }
             }
         }
@@ -33,7 +39,9 @@ pipeline {
         stage('Terraform validate') {
             steps {
                 dir('eks-terraform') {
-                    sh 'terraform validate'
+                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
+                        sh 'terraform validate'
+                    }
                 }
             }
         }
@@ -41,7 +49,9 @@ pipeline {
         stage('Terraform plan') {
             steps {
                 dir('eks-terraform') {
-                    sh 'terraform plan'
+                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
+                        sh 'terraform plan'
+                    }
                 }
             }
         }
@@ -52,7 +62,9 @@ pipeline {
             }
             steps {
                 dir('eks-terraform') {
-                    sh 'terraform apply -auto-approve'
+                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
+                        sh 'terraform apply -auto-approve'
+                    }
                 }
             }
         }
@@ -63,7 +75,9 @@ pipeline {
             }
             steps {
                 dir('eks-terraform') {
-                    sh 'terraform destroy -auto-approve'
+                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
+                        sh 'terraform destroy -auto-approve'
+                    }
                 }
             }
         }
