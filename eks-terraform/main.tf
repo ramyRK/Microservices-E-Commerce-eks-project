@@ -2,13 +2,8 @@ provider "aws" {
   region = "us-east-1"
 }
 
-/*
-# ALL CUSTOM IAM CREATION IS COMMENTED OUT
-# AWS Academy does not allow iam:CreateRole
-*/
-
 # ----------------------------
-# VPC and Subnet Data Sources (from your Jumphost VPC)
+# VPC and Subnet Data Sources
 # ----------------------------
 data "aws_vpc" "main" {
   tags = {
@@ -41,18 +36,10 @@ data "aws_security_group" "selected" {
 }
 
 # ----------------------------
-# Use the AWS-managed EKS service-linked role (pre-created, allowed in labs)
-# ----------------------------
-data "aws_iam_role" "eks_service_role" {
-  name = "AWSServiceRoleForAmazonEKS"
-}
-
-# ----------------------------
-# EKS Cluster - uses default service-linked role
+# EKS Cluster (uses default service-linked role - no custom IAM)
 # ----------------------------
 resource "aws_eks_cluster" "eks" {
   name     = "project-eks"
-  role_arn = data.aws_iam_role.eks_service_role.arn
 
   vpc_config {
     subnet_ids              = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
@@ -66,84 +53,47 @@ resource "aws_eks_cluster" "eks" {
     Environment = "dev"
     Terraform   = "true"
   }
-}
 
-# ----------------------------
-# EKS Node Group - uses launch template to avoid needing custom node role
-# ----------------------------
-resource "aws_launch_template" "eks_nodes" {
-  name_prefix   = "eks-node-"
-  image_id      = data.aws_ssm_parameter.amzn2_ami.value
-  instance_type = "t2.large"
+  # Important for labs: adds creator as admin
+  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
-  vpc_security_group_ids = [data.aws_security_group.selected.id]
-
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    /etc/eks/bootstrap.sh project-eks
-  EOF
-  )
-
-  block_device_mappings {
-    device_name = "/dev/xvda"
-    ebs {
-      volume_size = 20
-      volume_type = "gp3"
-    }
-  }
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name = "project-eks-node"
-    }
+  # This automatically grants the creator (your voclabs user) admin access
+  access_config {
+    authentication_mode = "API_AND_CONFIG_MAP"
   }
 }
 
-# Get latest Amazon Linux 2 AMI for EKS (recommended)
-data "aws_ssm_parameter" "amzn2_ami" {
-  name = "/aws/service/eks/optimized-ami/amazon-linux-2/recommended/image_id"
-}
-
-# Node group using launch template (no custom IAM role needed)
-resource "aws_eks_node_group" "node-grp" {
-  cluster_name    = aws_eks_cluster.eks.name
-  node_group_name = "project-node-group"
-  node_role_arn   = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/AmazonEKSNodeRole"  # fallback if needed, but usually not required
+# ----------------------------
+# Fargate Profile (serverless nodes - no IAM roles, no node groups)
+# ----------------------------
+resource "aws_eks_fargate_profile" "default" {
+  cluster_name           = aws_eks_cluster.eks.name
+  fargate_profile_name   = "default"
+  pod_execution_role_arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/AmazonEKSFargatePodExecutionRole"  # usually pre-exists or auto-created
 
   subnet_ids = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
 
-  scaling_config {
-    desired_size = 3
-    max_size     = 10
-    min_size     = 2
+  selector {
+    namespace = "default"
   }
 
-  update_config {
-    max_unavailable = 1
-  }
-
-  launch_template {
-    id      = aws_launch_template.eks_nodes.id
-    version = "$LatestVersion"
-  }
-
-  # Optional: remove node_role_arn if it causes issues
-  # (EKS can sometimes use default permissions)
-  lifecycle {
-    ignore_changes = [node_role_arn]
+  selector {
+    namespace = "kube-system"
   }
 
   tags = {
-    Name = "project-eks-node-group"
+    Name = "default-fargate-profile"
   }
 
   depends_on = [aws_eks_cluster.eks]
 }
 
-# For OIDC (optional, safe)
+# Needed for account ID
 data "aws_caller_identity" "current" {}
 
+# ----------------------------
+# Optional OIDC Provider (safe and useful)
+# ----------------------------
 data "aws_eks_cluster" "eks_oidc" {
   name = aws_eks_cluster.eks.name
 }
