@@ -3,15 +3,8 @@ provider "aws" {
 }
 
 /*
-# ----------------------------
 # ALL CUSTOM IAM ROLES AND POLICIES ARE COMMENTED OUT
-# (AWS Academy does not allow creating IAM roles)
-# ----------------------------
-# (Keep this entire block commented)
-resource "aws_iam_role" "master" { ... }
-resource "aws_iam_role_policy_attachment" "AmazonEKSClusterPolicy" { ... }
-# ... all other IAM resources you had ...
-resource "aws_iam_instance_profile" "worker" { ... }
+# (AWS Academy Learner Lab does not allow creating IAM roles)
 */
 
 # ----------------------------
@@ -48,10 +41,19 @@ data "aws_security_group" "selected" {
 }
 
 # ----------------------------
-# EKS Cluster (no custom role_arn → uses default service-linked role)
+# Use the default AWS-managed EKS service-linked role
+# (this role is automatically created by AWS and allowed in labs)
+# ----------------------------
+data "aws_iam_role" "eks_service_role" {
+  name = "AWSServiceRoleForAmazonEKS"
+}
+
+# ----------------------------
+# EKS Cluster
 # ----------------------------
 resource "aws_eks_cluster" "eks" {
-  name = "project-eks"
+  name     = "project-eks"
+  role_arn = data.aws_iam_role.eks_service_role.arn
 
   vpc_config {
     subnet_ids              = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
@@ -65,16 +67,14 @@ resource "aws_eks_cluster" "eks" {
     Environment = "dev"
     Terraform   = "true"
   }
-
-  # Removed: role_arn and depends_on (not needed in restricted labs)
 }
 
 # ----------------------------
-# EKS Node Group (no custom node_role_arn → uses default)
+# EKS Node Group (managed node group - no custom node role needed)
 # ----------------------------
 resource "aws_eks_node_group" "node-grp" {
   cluster_name    = aws_eks_cluster.eks.name
-  node_group_name = var.node_group_name
+  node_group_name = var.node_group_name  # make sure this variable is defined or replace with "project-node-group"
   subnet_ids      = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
 
   capacity_type  = "ON_DEMAND"
@@ -98,12 +98,10 @@ resource "aws_eks_node_group" "node-grp" {
   update_config {
     max_unavailable = 1
   }
-
-  # Removed: node_role_arn and depends_on
 }
 
 # ----------------------------
-# OIDC Provider for IRSA (optional but useful for later)
+# OIDC Provider (optional but useful for IRSA later)
 # ----------------------------
 data "aws_eks_cluster" "eks_oidc" {
   name = aws_eks_cluster.eks.name
