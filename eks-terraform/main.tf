@@ -3,12 +3,12 @@ provider "aws" {
 }
 
 /*
-# ALL CUSTOM IAM ROLES AND POLICIES ARE COMMENTED OUT
-# (AWS Academy Learner Lab does not allow creating IAM roles)
+# ALL CUSTOM IAM CREATION IS COMMENTED OUT
+# AWS Academy does not allow iam:CreateRole
 */
 
 # ----------------------------
-# VPC and Subnet Data Sources
+# VPC and Subnet Data Sources (from your Jumphost VPC)
 # ----------------------------
 data "aws_vpc" "main" {
   tags = {
@@ -41,15 +41,14 @@ data "aws_security_group" "selected" {
 }
 
 # ----------------------------
-# Use the default AWS-managed EKS service-linked role
-# (this role is automatically created by AWS and allowed in labs)
+# Use the AWS-managed EKS service-linked role (pre-created, allowed in labs)
 # ----------------------------
 data "aws_iam_role" "eks_service_role" {
   name = "AWSServiceRoleForAmazonEKS"
 }
 
 # ----------------------------
-# EKS Cluster
+# EKS Cluster - uses default service-linked role
 # ----------------------------
 resource "aws_eks_cluster" "eks" {
   name     = "project-eks"
@@ -63,31 +62,56 @@ resource "aws_eks_cluster" "eks" {
   }
 
   tags = {
-    Name        = "yaswanth-eks-cluster"
+    Name        = "project-eks-cluster"
     Environment = "dev"
     Terraform   = "true"
   }
 }
 
 # ----------------------------
-# EKS Node Group (managed node group - no custom node role needed)
+# EKS Node Group - uses launch template to avoid needing custom node role
 # ----------------------------
+resource "aws_launch_template" "eks_nodes" {
+  name_prefix   = "eks-node-"
+  image_id      = data.aws_ssm_parameter.amzn2_ami.value
+  instance_type = "t2.large"
+
+  vpc_security_group_ids = [data.aws_security_group.selected.id]
+
+  user_data = base64encode(<<-EOF
+    #!/bin/bash
+    /etc/eks/bootstrap.sh project-eks
+  EOF
+  )
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size = 20
+      volume_type = "gp3"
+    }
+  }
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = {
+      Name = "project-eks-node"
+    }
+  }
+}
+
+# Get latest Amazon Linux 2 AMI for EKS (recommended)
+data "aws_ssm_parameter" "amzn2_ami" {
+  name = "/aws/service/eks/optimized-ami/amazon-linux-2/recommended/image_id"
+}
+
+# Node group using launch template (no custom IAM role needed)
 resource "aws_eks_node_group" "node-grp" {
   cluster_name    = aws_eks_cluster.eks.name
-  node_group_name = var.node_group_name  # make sure this variable is defined or replace with "project-node-group"
-  subnet_ids      = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
+  node_group_name = "project-node-group"
+  node_role_arn   = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/AmazonEKSNodeRole"  # fallback if needed, but usually not required
 
-  capacity_type  = "ON_DEMAND"
-  disk_size      = 20
-  instance_types = ["t2.large"]
-
-  labels = {
-    env = "dev"
-  }
-
-  tags = {
-    Name = "project-eks-node-group"
-  }
+  subnet_ids = [data.aws_subnet.subnet-1.id, data.aws_subnet.subnet-2.id]
 
   scaling_config {
     desired_size = 3
@@ -98,11 +122,28 @@ resource "aws_eks_node_group" "node-grp" {
   update_config {
     max_unavailable = 1
   }
+
+  launch_template {
+    id      = aws_launch_template.eks_nodes.id
+    version = "$LatestVersion"
+  }
+
+  # Optional: remove node_role_arn if it causes issues
+  # (EKS can sometimes use default permissions)
+  lifecycle {
+    ignore_changes = [node_role_arn]
+  }
+
+  tags = {
+    Name = "project-eks-node-group"
+  }
+
+  depends_on = [aws_eks_cluster.eks]
 }
 
-# ----------------------------
-# OIDC Provider (optional but useful for IRSA later)
-# ----------------------------
+# For OIDC (optional, safe)
+data "aws_caller_identity" "current" {}
+
 data "aws_eks_cluster" "eks_oidc" {
   name = aws_eks_cluster.eks.name
 }
