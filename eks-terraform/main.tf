@@ -52,7 +52,7 @@ resource "aws_subnet" "public_subnet" {
 }
 
 # ----------------------------
-# Route Table
+# Route Table + Route
 # ----------------------------
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.jenkins_vpc.id
@@ -81,6 +81,7 @@ resource "aws_security_group" "jenkins_sg" {
   vpc_id      = aws_vpc.jenkins_vpc.id
 
   ingress {
+    description = "SSH"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -88,6 +89,7 @@ resource "aws_security_group" "jenkins_sg" {
   }
 
   ingress {
+    description = "Jenkins Web UI"
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
@@ -120,13 +122,16 @@ data "aws_ami" "amazon_linux" {
 }
 
 # ----------------------------
-# EC2 Instance with Jenkins installed
+# EC2 Instance with Jenkins Installed
 # ----------------------------
 resource "aws_instance" "jenkins" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = "t2.micro"
   subnet_id              = aws_subnet.public_subnet.id
   vpc_security_group_ids = [aws_security_group.jenkins_sg.id]
+
+  # ✅ remove key_name to avoid keypair requirement
+  # key_name = "vockey"
 
   user_data = <<-EOF
               #!/bin/bash
