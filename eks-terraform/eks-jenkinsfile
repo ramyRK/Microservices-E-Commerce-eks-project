@@ -9,10 +9,6 @@ pipeline {
         )
     }
 
-    environment {
-        AWS_DEFAULT_REGION = 'us-east-1'  // Change if your lab uses a different region
-    }
-
     stages {
         stage('Checkout from Git') {
             steps {
@@ -29,9 +25,7 @@ pipeline {
         stage('Terraform init') {
             steps {
                 dir('eks-terraform') {
-                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
-                        sh 'terraform init --reconfigure'
-                    }
+                    sh 'terraform init --reconfigure'
                 }
             }
         }
@@ -39,9 +33,7 @@ pipeline {
         stage('Terraform validate') {
             steps {
                 dir('eks-terraform') {
-                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
-                        sh 'terraform validate'
-                    }
+                    sh 'terraform validate'
                 }
             }
         }
@@ -49,9 +41,7 @@ pipeline {
         stage('Terraform plan') {
             steps {
                 dir('eks-terraform') {
-                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
-                        sh 'terraform plan'
-                    }
+                    sh 'terraform plan'
                 }
             }
         }
@@ -62,9 +52,7 @@ pipeline {
             }
             steps {
                 dir('eks-terraform') {
-                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
-                        sh 'terraform apply -auto-approve'
-                    }
+                    sh 'terraform apply -auto-approve'
                 }
             }
         }
@@ -75,9 +63,7 @@ pipeline {
             }
             steps {
                 dir('eks-terraform') {
-                    withAWS(credentials: 'aws-academy-creds', region: 'us-east-1') {
-                        sh 'terraform destroy -auto-approve'
-                    }
+                    sh 'terraform destroy -auto-approve'
                 }
             }
         }
